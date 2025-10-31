@@ -81,12 +81,31 @@ def add_trade():
                 response.headers['Content-Encoding'] = 'identity'
                 return response, 500
             
-            # Finde nächste freie Zeile
+            ticket = data.get('ticket', '')
+            
+            # PRÜFE OB TICKET SCHON EXISTIERT
+            print(f"🔍 Prüfe ob Ticket {ticket} bereits existiert...")
             all_values = sheet.get_all_values()
+            
+            for i, row in enumerate(all_values):
+                if len(row) > 1 and str(row[1]).strip() == str(ticket).strip():  # Spalte B (Index 1)
+                    print(f"⚠️ Ticket {ticket} existiert bereits in Zeile {i+1} - überspringe")
+                    response = jsonify({
+                        "ok": False,
+                        "message": f"Ticket {ticket} existiert bereits",
+                        "ticket": ticket,
+                        "duplicate": True
+                    })
+                    response.headers['Content-Encoding'] = 'identity'
+                    response.headers['Content-Type'] = 'application/json; charset=utf-8'
+                    return response
+            
+            print(f"✅ Ticket {ticket} ist neu - schreibe ins Sheet")
+            
+            # Finde nächste freie Zeile
             next_row = len(all_values) + 1
             
             # Daten vorbereiten
-            ticket = data.get('ticket', '')
             symbol = data.get('symbol', '').lower()
             side = data.get('side', '')
             price = data.get('price', 0)
