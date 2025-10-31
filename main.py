@@ -110,7 +110,15 @@ def add_trade():
             side = data.get('side', '')
             price = data.get('price', 0)
             volume = data.get('volume', 0)
+            balance = data.get('balance', 0)  # NEU: Kontostand
             timestamp = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            
+            # Bestimme ob Krypto oder Forex
+            is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
+            
+            print(f"  Symbol: {symbol}")
+            print(f"  Ist Krypto: {is_crypto}")
+            print(f"  Balance: {balance}")
             
             # Schreibe in Sheet (Spalten A-H)
             row_data = [
@@ -132,6 +140,14 @@ def add_trade():
             
             # Setze Lots (Spalte V = 22)
             sheet.update(f'V{next_row}', volume)
+            
+            # NEU: Setze Kontostand (W für Krypto, X für Forex)
+            if is_crypto:
+                sheet.update(f'W{next_row}', balance)  # W: Krypto Kontostand
+                print(f"  → Krypto Kontostand in W{next_row}: {balance}")
+            else:
+                sheet.update(f'X{next_row}', balance)  # X: Forex Kontostand (vorher Status, jetzt verschoben!)
+                print(f"  → Forex Kontostand in X{next_row}: {balance}")
             
             print(f"✅ Trade in Zeile {next_row} geschrieben: Ticket {ticket}, {symbol} {side}")
             
