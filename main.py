@@ -7,6 +7,16 @@ import json
 
 app = Flask(__name__)
 
+# Disable compression
+app.config['COMPRESS_REGISTER'] = False
+
+# ========== HTTP METHOD OVERRIDE FÜR PUT ==========
+@app.before_request
+def handle_method_override():
+    if request.headers.get('X-HTTP-Method-Override') == 'PUT':
+        request.environ['REQUEST_METHOD'] = 'PUT'
+        print("🔄 PUT-Request erkannt via X-HTTP-Method-Override")
+
 # Google Sheets Setup
 def get_google_sheet():
     try:
@@ -33,54 +43,60 @@ def get_google_sheet():
         print(f"❌ Fehler beim Sheet-Zugriff: {str(e)}")
         return None
 
+# ========== GET: TEST ENDPOINT ==========
 @app.route('/', methods=['GET'])
 def test():
-    action = request.args.get('action', '')
-    
-    if action == 'test':
-        # Teste Sheet-Verbindung
-        sheet = get_google_sheet()
-        if sheet:
-            return jsonify({
-                "status": "OK",
-                "message": "Verbindung erfolgreich - Sheet verbunden",
-                "timestamp": datetime.now().isoformat()
-            })
-        else:
-            return jsonify({
-                "status": "ERROR",
-                "message": "Sheet-Verbindung fehlgeschlagen"
-            }), 500
-    
-    return jsonify({
+    response = jsonify({
         "status": "OK",
-        "message": "MT5 Webhook Server läuft"
+        "message": "MT5 Webhook Server läuft",
+        "timestamp": datetime.now().isoformat()
     })
+    response.headers['Content-Encoding'] = 'identity'
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
+# ========== POST: TRADE EINTRAGEN ==========
 @app.route('/', methods=['POST'])
 def add_trade():
     try:
         data = request.get_json()
+        print(f"📥 POST empfangen: {data}")
         
         if data.get('action') == 'add_manual_trade':
             sheet = get_google_sheet()
             if not sheet:
                 return jsonify({"error": "Sheet nicht verfügbar"}), 500
             
-            # Finde nächste freie Zeile
+            ticket = data.get('ticket', '')
+            
+            # ===== DUPLIKAT-CHECK =====
             all_values = sheet.get_all_values()
+            for i, row in enumerate(all_values):
+                if len(row) > 1 and str(row[1]).strip() == str(ticket).strip():
+                    print(f"⚠️ Ticket {ticket} existiert bereits in Zeile {i+1}")
+                    response = jsonify({
+                        "ok": True,
+                        "message": "Trade bereits vorhanden (Duplikat verhindert)",
+                        "ticket": ticket
+                    })
+                    response.headers['Content-Encoding'] = 'identity'
+                    response.headers['Content-Type'] = 'application/json'
+                    return response
+            
+            # Finde nächste freie Zeile
             next_row = len(all_values) + 1
             
             # Daten vorbereiten
-            ticket = data.get('ticket', '')
             symbol = data.get('symbol', '').lower()
             side = data.get('side', '')
             price = data.get('price', 0)
             volume = data.get('volume', 0)
+            balance = data.get('balance', 0)
             timestamp = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
             
-            # Schreibe in Sheet (Spalten A-H)
-            # A: Timestamp, B: Ticket, C: leer, D: Symbol, E: Side, F: Entry, G: TP (0), H: SL (0)
+            is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
+            
+            # ===== ZEILE 1: TRADE-DATEN (A-H) =====
             row_data = [
                 timestamp,      # A: Datum/Zeit
                 str(ticket),    # B: Ticket
@@ -92,30 +108,113 @@ def add_trade():
                 0               # H: SL
             ]
             
-            # Schreibe Daten
             sheet.update(f'A{next_row}:H{next_row}', [row_data])
+            sheet.update(f'V{next_row}', volume)     # Spalte V: Lots
+            sheet.update(f'Y{next_row}', 'EXECUTED') # Spalte Y: Status
             
-            # Setze Status auf EXECUTED (Spalte X = 24)
-            sheet.update(f'X{next_row}', 'EXECUTED')
+            # ===== ZEILE 2: KONTOSTAND (eine Zeile drunter) =====
+            balance_row = next_row + 1
             
-            # Setze Lots (Spalte V = 22)
-            sheet.update(f'V{next_row}', volume)
+            if is_crypto:
+                sheet.update(f'W{balance_row}', balance)
+                print(f"✅ Crypto-Balance {balance} in W{balance_row}")
+            else:
+                sheet.update(f'X{balance_row}', balance)
+                print(f"✅ Forex-Balance {balance} in X{balance_row}")
+            
+            # Optional: Timestamp in Balance-Zeile
+            sheet.update(f'A{balance_row}', timestamp)
+            sheet.update(f'B{balance_row}', f"Balance #{ticket}")
             
             print(f"✅ Trade in Zeile {next_row} geschrieben: Ticket {ticket}, {symbol} {side}")
             
-            return jsonify({
+            response = jsonify({
                 "ok": True,
-                "message": "Trade erfolgreich ins Sheet geschrieben",
-                "row": next_row,
+                "message": "Trade und Balance erfolgreich geschrieben",
+                "trade_row": next_row,
+                "balance_row": balance_row,
                 "ticket": ticket
             })
+            response.headers['Content-Encoding'] = 'identity'
+            response.headers['Content-Type'] = 'application/json'
+            return response
         else:
             return jsonify({"error": "Unbekannte Aktion"}), 400
             
     except Exception as e:
-        print(f"❌ Fehler: {str(e)}")
+        print(f"❌ POST Fehler: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+# ========== PUT: TRADE SCHLIESSEN ==========
+@app.route('/', methods=['PUT'])
+def update_trade():
+    try:
+        data = request.get_json()
+        print(f"📥 PUT empfangen: {data}")
+        
+        if data.get('action') == 'update_trade_exit':
+            sheet = get_google_sheet()
+            if not sheet:
+                return jsonify({"error": "Sheet nicht verfügbar"}), 500
+            
+            ticket = data.get('ticket', '')
+            symbol = data.get('symbol', '').lower()
+            exit_price = data.get('exit_price', 0)
+            exit_time = data.get('exit_time', datetime.now().strftime('%d.%m.%Y %H:%M:%S'))
+            balance_after = data.get('balance', 0)
+            profit = data.get('profit', 0)
+            
+            # Finde Trade-Zeile anhand Ticket
+            all_values = sheet.get_all_values()
+            target_row = None
+            
+            for i, row in enumerate(all_values):
+                if len(row) > 1 and str(row[1]).strip() == str(ticket).strip():
+                    target_row = i + 1
+                    print(f"✅ Trade {ticket} gefunden in Zeile {target_row}")
+                    break
+            
+            if not target_row:
+                print(f"❌ Trade {ticket} nicht gefunden!")
+                return jsonify({"error": f"Trade {ticket} nicht gefunden"}), 404
+            
+            is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
+            balance_row = target_row + 1  # Eine Zeile drunter
+            
+            # ===== UPDATE TRADE-ZEILE =====
+            sheet.update(f'N{target_row}', exit_time)    # Spalte N: Exit Time
+            sheet.update(f'P{target_row}', exit_price)   # Spalte P: Exit Price
+            sheet.update(f'Y{target_row}', 'CLOSED')     # Spalte Y: Status
+            sheet.update(f'Z{target_row}', profit)       # Spalte Z: Profit/Loss
+            
+            # ===== UPDATE BALANCE-ZEILE (eine drunter) =====
+            if is_crypto:
+                sheet.update(f'W{balance_row}', balance_after)
+                print(f"✅ Crypto-Balance {balance_after} in W{balance_row} aktualisiert")
+            else:
+                sheet.update(f'X{balance_row}', balance_after)
+                print(f"✅ Forex-Balance {balance_after} in X{balance_row} aktualisiert")
+            
+            print(f"✅ Trade {ticket} geschlossen: Exit {exit_price}, Profit {profit}€")
+            
+            response = jsonify({
+                "ok": True,
+                "message": "Trade-Exit erfolgreich",
+                "ticket": ticket,
+                "trade_row": target_row,
+                "balance_row": balance_row
+            })
+            response.headers['Content-Encoding'] = 'identity'
+            response.headers['Content-Type'] = 'application/json'
+            return response
+        else:
+            return jsonify({"error": "Unbekannte Aktion"}), 400
+            
+    except Exception as e:
+        print(f"❌ PUT Fehler: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ========== GET /trades: TRADES ANZEIGEN ==========
 @app.route('/trades', methods=['GET'])
 def get_trades():
     try:
@@ -126,7 +225,7 @@ def get_trades():
         all_values = sheet.get_all_values()
         
         return jsonify({
-            "trades": all_values[-10:],  # Letzte 10 Trades
+            "trades": all_values[-10:],  # Letzte 10 Zeilen
             "count": len(all_values)
         })
     except Exception as e:
