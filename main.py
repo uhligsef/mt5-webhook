@@ -135,8 +135,8 @@ def add_trade():
             # Schreibe Daten
             sheet.update(f'A{next_row}:H{next_row}', [row_data])
             
-            # Setze Status auf EXECUTED (Spalte X = 24)
-            sheet.update(f'X{next_row}', 'EXECUTED')
+            # Setze Status auf EXECUTED (Spalte Y = 25)
+            sheet.update(f'Y{next_row}', 'EXECUTED')
             
             # Setze Lots (Spalte V = 22)
             sheet.update(f'V{next_row}', volume)
@@ -197,3 +197,4 @@ def get_trades():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
