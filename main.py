@@ -7,6 +7,9 @@ import json
 
 app = Flask(__name__)
 
+# Deaktiviere Komprimierung global
+app.config['COMPRESS_REGISTER'] = False
+
 # Google Sheets Setup
 def get_google_sheet():
     try:
@@ -41,21 +44,30 @@ def test():
         # Teste Sheet-Verbindung
         sheet = get_google_sheet()
         if sheet:
-            return jsonify({
+            response = jsonify({
                 "status": "OK",
                 "message": "Verbindung erfolgreich - Sheet verbunden",
                 "timestamp": datetime.now().isoformat()
             })
+            response.headers['Content-Encoding'] = 'identity'
+            response.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return response
         else:
-            return jsonify({
+            response = jsonify({
                 "status": "ERROR",
                 "message": "Sheet-Verbindung fehlgeschlagen"
-            }), 500
+            })
+            response.headers['Content-Encoding'] = 'identity'
+            response.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return response, 500
     
-    return jsonify({
+    response = jsonify({
         "status": "OK",
         "message": "MT5 Webhook Server läuft"
     })
+    response.headers['Content-Encoding'] = 'identity'
+    response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
 
 @app.route('/', methods=['POST'])
 def add_trade():
@@ -65,7 +77,9 @@ def add_trade():
         if data.get('action') == 'add_manual_trade':
             sheet = get_google_sheet()
             if not sheet:
-                return jsonify({"error": "Sheet nicht verfügbar"}), 500
+                response = jsonify({"error": "Sheet nicht verfügbar"})
+                response.headers['Content-Encoding'] = 'identity'
+                return response, 500
             
             # Finde nächste freie Zeile
             all_values = sheet.get_all_values()
@@ -80,7 +94,6 @@ def add_trade():
             timestamp = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
             
             # Schreibe in Sheet (Spalten A-H)
-            # A: Timestamp, B: Ticket, C: leer, D: Symbol, E: Side, F: Entry, G: TP (0), H: SL (0)
             row_data = [
                 timestamp,      # A: Datum/Zeit
                 str(ticket),    # B: Ticket
@@ -103,34 +116,48 @@ def add_trade():
             
             print(f"✅ Trade in Zeile {next_row} geschrieben: Ticket {ticket}, {symbol} {side}")
             
-            return jsonify({
+            response = jsonify({
                 "ok": True,
                 "message": "Trade erfolgreich ins Sheet geschrieben",
                 "row": next_row,
                 "ticket": ticket
             })
+            response.headers['Content-Encoding'] = 'identity'
+            response.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return response
         else:
-            return jsonify({"error": "Unbekannte Aktion"}), 400
+            response = jsonify({"error": "Unbekannte Aktion"})
+            response.headers['Content-Encoding'] = 'identity'
+            return response, 400
             
     except Exception as e:
         print(f"❌ Fehler: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        response = jsonify({"error": str(e)})
+        response.headers['Content-Encoding'] = 'identity'
+        return response, 500
 
 @app.route('/trades', methods=['GET'])
 def get_trades():
     try:
         sheet = get_google_sheet()
         if not sheet:
-            return jsonify({"error": "Sheet nicht verfügbar"}), 500
+            response = jsonify({"error": "Sheet nicht verfügbar"})
+            response.headers['Content-Encoding'] = 'identity'
+            return response, 500
         
         all_values = sheet.get_all_values()
         
-        return jsonify({
+        response = jsonify({
             "trades": all_values[-10:],  # Letzte 10 Trades
             "count": len(all_values)
         })
+        response.headers['Content-Encoding'] = 'identity'
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+        return response
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        response = jsonify({"error": str(e)})
+        response.headers['Content-Encoding'] = 'identity'
+        return response, 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
