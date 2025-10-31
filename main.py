@@ -10,6 +10,12 @@ app = Flask(__name__)
 # Deaktiviere Komprimierung global
 app.config['COMPRESS_REGISTER'] = False
 
+# NEU: Handle PUT via POST with X-HTTP-Method-Override Header
+@app.before_request
+def handle_method_override():
+    if request.headers.get('X-HTTP-Method-Override') == 'PUT':
+        request.environ['REQUEST_METHOD'] = 'PUT'
+        
 # Google Sheets Setup
 def get_google_sheet():
     try:
@@ -281,3 +287,4 @@ def get_trades():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
