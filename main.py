@@ -160,24 +160,38 @@ def update_trade():
             balance_after = data.get('balance', 0)
             profit = data.get('profit', 0)
             
+            print(f"🔍 Suche nach Ticket: {ticket} (Typ: {type(ticket)})")
+            
             # Finde Trade-Zeile anhand Ticket
             all_values = sheet.get_all_values()
             target_row = None
             
+            # DEBUG: Zeige alle Tickets im Sheet
+            print(f"📋 Alle Tickets im Sheet:")
             for i, row in enumerate(all_values):
-                if len(row) > 1 and str(row[1]).strip() == str(ticket).strip():
-                    target_row = i + 1
-                    print(f"✅ Trade {ticket} gefunden in Zeile {target_row}")
-                    break
+                if len(row) > 1 and row[1]:  # Spalte B
+                    print(f"  Zeile {i+1}: '{row[1]}' (Typ: {type(row[1])})")
+            
+            for i, row in enumerate(all_values):
+                if len(row) > 1:
+                    sheet_ticket = str(row[1]).strip()
+                    search_ticket = str(ticket).strip()
+                    
+                    if sheet_ticket == search_ticket:
+                        target_row = i + 1
+                        print(f"✅ Trade {ticket} gefunden in Zeile {target_row}")
+                        break
             
             if not target_row:
-                print(f"❌ Trade {ticket} nicht gefunden!")
-                return jsonify({"error": f"Trade {ticket} nicht gefunden"}), 404
+                error_msg = f"Trade {ticket} nicht gefunden! Vorhandene Tickets: {[row[1] for row in all_values if len(row) > 1 and row[1]]}"
+                print(f"❌ {error_msg}")
+                return jsonify({"error": error_msg}), 404
             
             is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
             balance_row = target_row + 1  # Kontostand ist eine Zeile drunter
             
             # ===== UPDATE TRADE-ZEILE (Exit-Daten) =====
+            print(f"📝 Schreibe Exit-Daten in Zeile {target_row}")
             sheet.update(f'N{target_row}', exit_time)    # Spalte N: Exit Time
             sheet.update(f'P{target_row}', exit_price)   # Spalte P: Exit Price
             sheet.update(f'Y{target_row}', 'CLOSED')     # Spalte Y: Status
@@ -208,6 +222,8 @@ def update_trade():
             
     except Exception as e:
         print(f"❌ PUT Fehler: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 # ========== GET /trades: TRADES ANZEIGEN ==========
