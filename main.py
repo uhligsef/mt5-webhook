@@ -96,7 +96,7 @@ def add_trade():
             
             is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
             
-            # ===== ZEILE 1: TRADE-DATEN (A-H) =====
+            # ===== ZEILE 1: TRADE-DATEN (A-H, V, Y) OHNE Balance =====
             row_data = [
                 timestamp,      # A: Datum/Zeit
                 str(ticket),    # B: Ticket
@@ -112,7 +112,7 @@ def add_trade():
             sheet.update(f'V{next_row}', volume)     # Spalte V: Lots
             sheet.update(f'Y{next_row}', 'EXECUTED') # Spalte Y: Status
             
-            # ===== ZEILE 2: KONTOSTAND (eine Zeile drunter) =====
+            # ===== ZEILE 2: NUR KONTOSTAND (eine Zeile drunter) =====
             balance_row = next_row + 1
             
             if is_crypto:
@@ -122,11 +122,7 @@ def add_trade():
                 sheet.update(f'X{balance_row}', balance)
                 print(f"✅ Forex-Balance {balance} in X{balance_row}")
             
-            # Optional: Timestamp in Balance-Zeile
-            sheet.update(f'A{balance_row}', timestamp)
-            sheet.update(f'B{balance_row}', f"Balance #{ticket}")
-            
-            print(f"✅ Trade in Zeile {next_row} geschrieben: Ticket {ticket}, {symbol} {side}")
+            print(f"✅ Trade in Zeile {next_row}, Balance in Zeile {balance_row}")
             
             response = jsonify({
                 "ok": True,
@@ -179,9 +175,9 @@ def update_trade():
                 return jsonify({"error": f"Trade {ticket} nicht gefunden"}), 404
             
             is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
-            balance_row = target_row + 1  # Eine Zeile drunter
+            balance_row = target_row + 1  # Kontostand ist eine Zeile drunter
             
-            # ===== UPDATE TRADE-ZEILE =====
+            # ===== UPDATE TRADE-ZEILE (Exit-Daten) =====
             sheet.update(f'N{target_row}', exit_time)    # Spalte N: Exit Time
             sheet.update(f'P{target_row}', exit_price)   # Spalte P: Exit Price
             sheet.update(f'Y{target_row}', 'CLOSED')     # Spalte Y: Status
@@ -190,10 +186,10 @@ def update_trade():
             # ===== UPDATE BALANCE-ZEILE (eine drunter) =====
             if is_crypto:
                 sheet.update(f'W{balance_row}', balance_after)
-                print(f"✅ Crypto-Balance {balance_after} in W{balance_row} aktualisiert")
+                print(f"✅ Crypto-Balance aktualisiert: {balance_after} in W{balance_row}")
             else:
                 sheet.update(f'X{balance_row}', balance_after)
-                print(f"✅ Forex-Balance {balance_after} in X{balance_row} aktualisiert")
+                print(f"✅ Forex-Balance aktualisiert: {balance_after} in X{balance_row}")
             
             print(f"✅ Trade {ticket} geschlossen: Exit {exit_price}, Profit {profit}€")
             
