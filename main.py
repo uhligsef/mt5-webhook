@@ -20,7 +20,6 @@ def handle_method_override():
 # Google Sheets Setup
 def get_google_sheet():
     try:
-        # Service Account Credentials aus Environment Variable
         creds_json = os.environ.get('GOOGLE_CREDENTIALS')
         if not creds_json:
             print("❌ GOOGLE_CREDENTIALS nicht gefunden!")
@@ -33,7 +32,6 @@ def get_google_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # Öffne dein Sheet
         sheet_url = os.environ.get('SHEET_URL')
         sheet = client.open_by_url(sheet_url)
         worksheet = sheet.worksheet('Tagebuch')
@@ -69,22 +67,23 @@ def add_trade():
             
             ticket = data.get('ticket', '')
             
-            # ===== DUPLIKAT-CHECK =====
-            all_values = sheet.get_all_values()
-            for i, row in enumerate(all_values):
-                if len(row) > 1 and str(row[1]).strip() == str(ticket).strip():
-                    print(f"⚠️ Ticket {ticket} existiert bereits in Zeile {i+1}")
-                    response = jsonify({
-                        "ok": True,
-                        "message": "Trade bereits vorhanden (Duplikat verhindert)",
-                        "ticket": ticket
-                    })
-                    response.headers['Content-Encoding'] = 'identity'
-                    response.headers['Content-Type'] = 'application/json'
-                    return response
+            # ===== OPTIMIERT: Nur Spalte B lesen (Tickets) =====
+            tickets_column = sheet.col_values(2)  # Spalte B
             
-            # Finde nächste freie Zeile
-            next_row = len(all_values) + 1
+            if str(ticket) in [str(t).strip() for t in tickets_column if t]:
+                print(f"⚠️ Ticket {ticket} existiert bereits")
+                response = jsonify({
+                    "ok": True,
+                    "message": "Trade bereits vorhanden",
+                    "ticket": ticket
+                })
+                response.headers['Content-Encoding'] = 'identity'
+                response.headers['Content-Type'] = 'application/json'
+                return response
+            
+            # Finde nächste freie Zeile in Spalte A-H
+            column_a = sheet.col_values(1)  # Spalte A
+            next_row = len(column_a) + 1
             
             # Daten vorbereiten
             symbol = data.get('symbol', '').lower()
@@ -96,37 +95,35 @@ def add_trade():
             
             is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
             
-            # ===== ZEILE 1: TRADE-DATEN (A-H, V, Y) OHNE Balance =====
+            # ===== TRADE-DATEN (A-H, V, Y) =====
             row_data = [
-                timestamp,      # A: Datum/Zeit
-                str(ticket),    # B: Ticket
-                '',             # C: leer
-                symbol,         # D: Symbol
-                side,           # E: Side (B/S)
-                price,          # F: Entry Price
+                timestamp,      # A
+                str(ticket),    # B
+                '',             # C
+                symbol,         # D
+                side,           # E
+                price,          # F
                 0,              # G: TP
                 0               # H: SL
             ]
             
             sheet.update(f'A{next_row}:H{next_row}', [row_data])
-            sheet.update(f'V{next_row}', volume)     # Spalte V: Lots
-            sheet.update(f'Y{next_row}', 'EXECUTED') # Spalte Y: Status
+            sheet.update(f'V{next_row}', volume)
+            sheet.update(f'Y{next_row}', 'EXECUTED')
             
-            # ===== ZEILE 2: NUR KONTOSTAND (eine Zeile drunter) =====
+            # ===== KONTOSTAND (eine Zeile drunter) =====
             balance_row = next_row + 1
             
             if is_crypto:
                 sheet.update(f'W{balance_row}', balance)
-                print(f"✅ Crypto-Balance {balance} in W{balance_row}")
             else:
                 sheet.update(f'X{balance_row}', balance)
-                print(f"✅ Forex-Balance {balance} in X{balance_row}")
             
-            print(f"✅ Trade in Zeile {next_row}, Balance in Zeile {balance_row}")
+            print(f"✅ Trade {ticket} in Zeile {next_row}, Balance in {balance_row}")
             
             response = jsonify({
                 "ok": True,
-                "message": "Trade und Balance erfolgreich geschrieben",
+                "message": "Trade erfolgreich",
                 "trade_row": next_row,
                 "balance_row": balance_row,
                 "ticket": ticket
@@ -160,59 +157,43 @@ def update_trade():
             balance_after = data.get('balance', 0)
             profit = data.get('profit', 0)
             
-            print(f"🔍 Suche nach Ticket: {ticket} (Typ: {type(ticket)})")
+            print(f"🔍 Suche Ticket: {ticket}")
             
-            # Finde Trade-Zeile anhand Ticket
-            all_values = sheet.get_all_values()
+            # ===== OPTIMIERT: Nur Spalte B lesen =====
+            tickets_column = sheet.col_values(2)  # Spalte B
             target_row = None
             
-            # DEBUG: Zeige alle Tickets im Sheet
-            print(f"📋 Alle Tickets im Sheet:")
-            for i, row in enumerate(all_values):
-                if len(row) > 1 and row[1]:  # Spalte B
-                    print(f"  Zeile {i+1}: '{row[1]}' (Typ: {type(row[1])})")
-            
-            for i, row in enumerate(all_values):
-                if len(row) > 1:
-                    sheet_ticket = str(row[1]).strip()
-                    search_ticket = str(ticket).strip()
-                    
-                    if sheet_ticket == search_ticket:
-                        target_row = i + 1
-                        print(f"✅ Trade {ticket} gefunden in Zeile {target_row}")
-                        break
+            for i, t in enumerate(tickets_column):
+                if str(t).strip() == str(ticket).strip():
+                    target_row = i + 1
+                    print(f"✅ Ticket {ticket} gefunden in Zeile {target_row}")
+                    break
             
             if not target_row:
-                error_msg = f"Trade {ticket} nicht gefunden! Vorhandene Tickets: {[row[1] for row in all_values if len(row) > 1 and row[1]]}"
-                print(f"❌ {error_msg}")
-                return jsonify({"error": error_msg}), 404
+                print(f"❌ Ticket {ticket} nicht gefunden!")
+                return jsonify({"error": f"Ticket {ticket} nicht gefunden"}), 404
             
             is_crypto = symbol in ['btcusd', 'ethusd', 'bchusd', 'ltcusd', 'xrpusd']
-            balance_row = target_row + 1  # Kontostand ist eine Zeile drunter
+            balance_row = target_row + 1
             
-            # ===== UPDATE TRADE-ZEILE (Exit-Daten) =====
-            print(f"📝 Schreibe Exit-Daten in Zeile {target_row}")
-            sheet.update(f'N{target_row}', exit_time)    # Spalte N: Exit Time
-            sheet.update(f'P{target_row}', exit_price)   # Spalte P: Exit Price
-            sheet.update(f'Y{target_row}', 'CLOSED')     # Spalte Y: Status
-            sheet.update(f'Z{target_row}', profit)       # Spalte Z: Profit/Loss
+            # ===== UPDATE TRADE-ZEILE =====
+            sheet.update(f'N{target_row}', exit_time)
+            sheet.update(f'P{target_row}', exit_price)
+            sheet.update(f'Y{target_row}', 'CLOSED')
+            sheet.update(f'Z{target_row}', profit)
             
-            # ===== UPDATE BALANCE-ZEILE (eine drunter) =====
+            # ===== UPDATE BALANCE =====
             if is_crypto:
                 sheet.update(f'W{balance_row}', balance_after)
-                print(f"✅ Crypto-Balance aktualisiert: {balance_after} in W{balance_row}")
             else:
                 sheet.update(f'X{balance_row}', balance_after)
-                print(f"✅ Forex-Balance aktualisiert: {balance_after} in X{balance_row}")
             
-            print(f"✅ Trade {ticket} geschlossen: Exit {exit_price}, Profit {profit}€")
+            print(f"✅ Trade {ticket} geschlossen")
             
             response = jsonify({
                 "ok": True,
                 "message": "Trade-Exit erfolgreich",
-                "ticket": ticket,
-                "trade_row": target_row,
-                "balance_row": balance_row
+                "ticket": ticket
             })
             response.headers['Content-Encoding'] = 'identity'
             response.headers['Content-Type'] = 'application/json'
@@ -222,11 +203,9 @@ def update_trade():
             
     except Exception as e:
         print(f"❌ PUT Fehler: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# ========== GET /trades: TRADES ANZEIGEN ==========
+# ========== GET /trades ==========
 @app.route('/trades', methods=['GET'])
 def get_trades():
     try:
@@ -237,7 +216,7 @@ def get_trades():
         all_values = sheet.get_all_values()
         
         return jsonify({
-            "trades": all_values[-10:],  # Letzte 10 Zeilen
+            "trades": all_values[-10:],
             "count": len(all_values)
         })
     except Exception as e:
