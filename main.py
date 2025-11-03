@@ -17,29 +17,41 @@ def handle_method_override():
         request.environ['REQUEST_METHOD'] = 'PUT'
         print("🔄 PUT-Request erkannt via X-HTTP-Method-Override")
 
-# ========== HELPER: JSON D aus Request extrahieren ==========
+# ========== HELPER: JSON aus Request extrahieren ==========
 def get_json_from_request():
     """Extrahiert JSON aus Request, auch wenn Content-Type fehlt"""
     try:
-        # Versuche zuerst request.get_json()
-        if request.get_json(silent=True):
-            return request.get_json()
+        # Zuerst: Versuche request.get_json() mit force=True
+        if request.content_type and 'json' in request.content_type.lower():
+            json_data = request.get_json(silent=True, force=True)
+            if json_data:
+                return json_data
         
-        # Falls das fehlschlägt, versuche direkt aus request.data zu lesen
-        if request.data:
-            data_str = request.data.decode('utf-8')
-            if data_str:
-                return json.loads(data_str)
+        # Zweiter Versuch: Direkt aus request.data lesen
+        if request.data and len(request.data) > 0:
+            try:
+                data_str = request.data.decode('utf-8').strip()
+                if data_str:
+                    print(f"📦 Raw data empfangen: {data_str[:200]}...")  # Erste 200 Zeichen
+                    return json.loads(data_str)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                print(f"⚠️ Fehler beim Dekodieren: {str(e)}")
         
-        # Falls auch das fehlschlägt, versuche form data
+        # Dritter Versuch: Form-Daten (falls MQL5 das verwendet)
         if request.form:
-            # Falls JSON als String in form data ist
-            if 'json' in request.form:
-                return json.loads(request.form['json'])
+            for key in request.form:
+                try:
+                    return json.loads(request.form[key])
+                except:
+                    pass
         
+        print(f"⚠️ Keine Daten gefunden. Content-Type: {request.content_type}, Data-Length: {len(request.data) if request.data else 0}")
         return None
+        
     except Exception as e:
         print(f"⚠️ Fehler beim JSON-Extrahieren: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return None
 
 # Google Sheets Setup
