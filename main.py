@@ -17,9 +17,35 @@ def handle_method_override():
         request.environ['REQUEST_METHOD'] = 'PUT'
         print("🔄 PUT-Request erkannt via X-HTTP-Method-Override")
 
+# ========== HELPER: JSON D aus Request extrahieren ==========
+def get_json_from_request():
+    """Extrahiert JSON aus Request, auch wenn Content-Type fehlt"""
+    try:
+        # Versuche zuerst request.get_json()
+        if request.get_json(silent=True):
+            return request.get_json()
+        
+        # Falls das fehlschlägt, versuche direkt aus request.data zu lesen
+        if request.data:
+            data_str = request.data.decode('utf-8')
+            if data_str:
+                return json.loads(data_str)
+        
+        # Falls auch das fehlschlägt, versuche form data
+        if request.form:
+            # Falls JSON als String in form data ist
+            if 'json' in request.form:
+                return json.loads(request.form['json'])
+        
+        return None
+    except Exception as e:
+        print(f"⚠️ Fehler beim JSON-Extrahieren: {str(e)}")
+        return None
+
 # Google Sheets Setup
 def get_google_sheet():
     try:
+        # Service Account Credentials aus Environment Variable
         creds_json = os.environ.get('GOOGLE_CREDENTIALS')
         if not creds_json:
             print("❌ GOOGLE_CREDENTIALS nicht gefunden!")
@@ -32,6 +58,7 @@ def get_google_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
+        # Öffne dein Sheet
         sheet_url = os.environ.get('SHEET_URL')
         sheet = client.open_by_url(sheet_url)
         worksheet = sheet.worksheet('Tagebuch')
@@ -57,7 +84,14 @@ def test():
 @app.route('/', methods=['POST'])
 def add_trade():
     try:
-        data = request.get_json()
+        # Verwende unsere Helper-Funktion
+        data = get_json_from_request()
+        
+        if not data:
+            print(f"⚠️ Keine Daten empfangen. Content-Type: {request.content_type}")
+            print(f"⚠️ Raw data: {request.data}")
+            return jsonify({"error": "Keine JSON-Daten empfangen"}), 400
+        
         print(f"📥 POST empfangen: {data}")
         
         if data.get('action') == 'add_manual_trade':
@@ -136,13 +170,22 @@ def add_trade():
             
     except Exception as e:
         print(f"❌ POST Fehler: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 # ========== PUT: TRADE SCHLIESSEN ==========
 @app.route('/', methods=['PUT'])
 def update_trade():
     try:
-        data = request.get_json()
+        # Verwende unsere Helper-Funktion
+        data = get_json_from_request()
+        
+        if not data:
+            print(f"⚠️ Keine Daten empfangen. Content-Type: {request.content_type}")
+            print(f"⚠️ Raw data: {request.data}")
+            return jsonify({"error": "Keine JSON-Daten empfangen"}), 400
+        
         print(f"📥 PUT empfangen: {data}")
         
         if data.get('action') == 'update_trade_exit':
@@ -203,9 +246,11 @@ def update_trade():
             
     except Exception as e:
         print(f"❌ PUT Fehler: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
-# ========== GET /trades ==========
+# ========== GET /trades: TRADES ANZEIGEN ==========
 @app.route('/trades', methods=['GET'])
 def get_trades():
     try:
@@ -216,7 +261,7 @@ def get_trades():
         all_values = sheet.get_all_values()
         
         return jsonify({
-            "trades": all_values[-10:],
+            "trades": all_values[-10:],  # Letzte 10 Zeilen
             "count": len(all_values)
         })
     except Exception as e:
