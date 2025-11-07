@@ -22,9 +22,9 @@ def get_google_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
         client = gspread.authorize(creds)
         
-        sheet_url = os.environ.get('GOOGLE_SHEET_URL')
+        sheet_url = os.environ.get('SHEET_URL')
         if not sheet_url:
-            print("❌ GOOGLE_SHEET_URL nicht gefunden!")
+            print("❌ SHEET_URL nicht gefunden!")
             return None
         
         sheet = client.open_by_url(sheet_url).sheet1
@@ -169,3 +169,4 @@ def update_trade():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
