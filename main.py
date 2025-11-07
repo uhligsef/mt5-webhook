@@ -3,8 +3,12 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 from datetime import datetime
+import time
 
 app = Flask(__name__)
+
+# Cache für Sheet-Daten (wird alle 10 Sekunden aktualisiert)
+sheet_cache = {"data": None, "timestamp": 0, "next_free_row": None}
 
 def get_google_sheet():
     try:
@@ -57,14 +61,32 @@ def get_json_from_request():
         print(f"⚠️ Fehler beim Parsen von JSON: {e}")
         return None
 
-def find_next_free_row(sheet):
-    """Finde die erste Zeile, wo A-H komplett leer sind"""
+def find_next_free_row_optimized(sheet):
+    """Optimierte Version: Nur EINEN API-Call statt viele"""
+    global sheet_cache
+    
     try:
-        all_values = sheet.get_all_values()
+        current_time = time.time()
         
-        for row_num in range(2, len(all_values) + 100):
-            row_values = sheet.row_values(row_num)
+        # Cache nur alle 5 Sekunden aktualisieren
+        if (current_time - sheet_cache["timestamp"] > 5) or sheet_cache["data"] is None:
+            # EINEN API-Call: Hole alle Werte auf einmal
+            all_values = sheet.get_all_values()
+            sheet_cache["data"] = all_values
+            sheet_cache["timestamp"] = current_time
+            sheet_cache["next_free_row"] = None
+        else:
+            all_values = sheet_cache["data"]
+        
+        # Prüfe im Speicher (keine API-Calls)
+        for row_num in range(1, len(all_values) + 100):  # Starte ab Zeile 2 (Index 1)
+            if row_num >= len(all_values):
+                # Neue Zeile
+                return row_num + 1
             
+            row_values = all_values[row_num] if row_num < len(all_values) else []
+            
+            # Prüfe ob A-H (Spalten 0-7) leer sind
             is_empty = True
             for col_idx in range(8):  # A-H = 8 Spalten
                 if col_idx < len(row_values) and row_values[col_idx].strip():
@@ -72,12 +94,16 @@ def find_next_free_row(sheet):
                     break
             
             if is_empty:
-                return row_num
+                return row_num + 1
         
         return len(all_values) + 1
     except Exception as e:
         print(f"⚠️ Fehler beim Finden der freien Zeile: {e}")
-        return len(sheet.get_all_values()) + 1
+        # Fallback: Einfach nächste Zeile
+        try:
+            return len(sheet.get_all_values()) + 1
+        except:
+            return 100  # Notfall-Fallback
 
 @app.before_request
 def handle_method_override():
@@ -103,7 +129,7 @@ def tradingview_webhook():
         if not sheet:
             return jsonify({"error": "Sheet konnte nicht geöffnet werden"}), 500
         
-        # Konvertiere TradingView-Format zu unserem Format
+        # Konvertiere TradingView-Format
         symbol = data.get('symbol', '').upper()
         side_tv = data.get('side', '').upper()
         side = 'BUY' if side_tv == 'B' else 'SELL' if side_tv == 'S' else ''
@@ -111,60 +137,82 @@ def tradingview_webhook():
         if not side:
             return jsonify({"error": "Ungültiger Side-Wert. Muss 'B' oder 'S' sein"}), 400
         
-        # Generiere Ticket (TradingView + Timestamp)
-        import time
+        # Korrigiere TP/SL (Doppelpunkt zu Punkt)
+        entry = str(data.get('entry', '')).replace(':', '.')
+        tp = str(data.get('tp', '')).replace(':', '.')
+        sl = str(data.get('sl', '')).replace(':', '.')
+        
+        # Generiere Ticket
         ticket = f"TV_{int(time.time())}"
         
-        # Hole aktuellen Kontostand (aus letzter Zeile oder Default)
+        # Hole Balance (aus Cache oder Default)
+        balance = 0.0
         try:
-            all_values = sheet.get_all_values()
-            # Suche nach letztem Balance-Eintrag in Spalte W oder X
-            balance = 0.0
-            for row in reversed(all_values):
-                if len(row) > 22 and row[22]:  # Spalte W (Index 22)
-                    try:
-                        balance = float(row[22])
-                        break
-                    except:
-                        pass
-                if len(row) > 23 and row[23]:  # Spalte X (Index 23)
-                    try:
-                        balance = float(row[23])
-                        break
-                    except:
-                        pass
+            if sheet_cache["data"]:
+                all_values = sheet_cache["data"]
+                for row in reversed(all_values):
+                    if len(row) > 22 and row[22]:  # Spalte W
+                        try:
+                            balance = float(str(row[22]).replace(',', '.'))
+                            break
+                        except:
+                            pass
+                    if len(row) > 23 and row[23]:  # Spalte X
+                        try:
+                            balance = float(str(row[23]).replace(',', '.'))
+                            break
+                        except:
+                            pass
         except:
-            balance = 0.0
+            pass
         
-        # Prüfe auf Duplikate (gleicher Symbol + Side + Entry Price innerhalb der letzten 5 Minuten)
-        existing_tickets = sheet.col_values(2)
+        # Prüfe auf Duplikate (nur im Cache, kein API-Call)
+        existing_tickets = []
+        try:
+            if sheet_cache["data"]:
+                for row in sheet_cache["data"]:
+                    if len(row) > 1 and row[1]:  # Spalte B
+                        existing_tickets.append(str(row[1]))
+        except:
+            pass
+        
         if ticket in existing_tickets:
             print(f"⚠️ Duplikat erkannt: Ticket {ticket}")
             return jsonify({"error": "Trade bereits vorhanden"}), 400
         
-        # Finde nächste freie Zeile
-        next_row = find_next_free_row(sheet)
+        # Finde nächste freie Zeile (optimiert)
+        next_row = find_next_free_row_optimized(sheet)
         print(f"📝 Schreibe TradingView Signal in Zeile {next_row}")
         
-        # Aktueller Timestamp
+        # Timestamp
         timestamp = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         
-        # Schreibe Trade-Daten
-        sheet.update(f'A{next_row}', timestamp)
-        sheet.update(f'B{next_row}', ticket)
-        sheet.update(f'C{next_row}', symbol)
-        sheet.update(f'D{next_row}', side)
-        sheet.update(f'E{next_row}', data.get('entry', ''))
-        sheet.update(f'F{next_row}', data.get('tp', ''))
-        sheet.update(f'G{next_row}', data.get('sl', ''))
-        sheet.update(f'H{next_row}', '0.01')  # Default Lots
-        sheet.update(f'V{next_row}', str(balance))
-        sheet.update(f'Y{next_row}', 'PENDING')  # Status: PENDING für TradingView
+        # Schreibe Trade-Daten (Batch-Update für weniger API-Calls)
+        updates = [
+            {'range': f'A{next_row}', 'values': [[timestamp]]},
+            {'range': f'B{next_row}', 'values': [[ticket]]},
+            {'range': f'C{next_row}', 'values': [[symbol]]},
+            {'range': f'D{next_row}', 'values': [[side]]},
+            {'range': f'E{next_row}', 'values': [[entry]]},
+            {'range': f'F{next_row}', 'values': [[tp]]},
+            {'range': f'G{next_row}', 'values': [[sl]]},
+            {'range': f'H{next_row}', 'values': [['0.01']]},
+            {'range': f'V{next_row}', 'values': [[str(balance)]]},
+            {'range': f'Y{next_row}', 'values': [['PENDING']]},
+        ]
         
-        # Schreibe Kontostand in nächste Zeile
+        # Batch-Update (weniger API-Calls)
+        for update in updates:
+            sheet.update(update['range'], update['values'])
+        
+        # Kontostand in nächste Zeile
         symbol_lower = symbol.lower()
         balance_col = 'W' if any(crypto in symbol_lower for crypto in ['btc', 'eth', 'usd']) else 'X'
-        sheet.update(f'{balance_col}{next_row + 1}', str(balance))
+        sheet.update(f'{balance_col}{next_row + 1}', [[str(balance)]])
+        
+        # Cache invalidieren
+        sheet_cache["data"] = None
+        sheet_cache["timestamp"] = 0
         
         print(f"✅ TradingView Signal {ticket} hinzugefügt in Zeile {next_row}")
         return jsonify({"status": "ok", "row": next_row, "ticket": ticket}), 200
@@ -192,14 +240,24 @@ def add_trade():
         if not ticket:
             return jsonify({"error": "Kein Ticket angegeben"}), 400
         
-        # Prüfe auf Duplikate
-        existing_tickets = sheet.col_values(2)
+        # Prüfe auf Duplikate (optimiert)
+        existing_tickets = []
+        try:
+            if sheet_cache["data"]:
+                for row in sheet_cache["data"]:
+                    if len(row) > 1 and row[1]:
+                        existing_tickets.append(str(row[1]))
+            else:
+                existing_tickets = sheet.col_values(2)
+        except:
+            existing_tickets = sheet.col_values(2)
+        
         if ticket in existing_tickets:
             print(f"⚠️ Duplikat erkannt: Ticket {ticket}")
             return jsonify({"error": "Trade bereits vorhanden"}), 400
         
         # Finde nächste freie Zeile
-        next_row = find_next_free_row(sheet)
+        next_row = find_next_free_row_optimized(sheet)
         print(f"📝 Schreibe in Zeile {next_row}")
         
         # Schreibe Trade-Daten
@@ -214,11 +272,15 @@ def add_trade():
         sheet.update(f'V{next_row}', data.get('balance', ''))
         sheet.update(f'Y{next_row}', 'EXECUTED')
         
-        # Schreibe Kontostand in nächste Zeile
+        # Kontostand in nächste Zeile
         balance = data.get('balance', '')
         symbol = data.get('symbol', '').lower()
         balance_col = 'W' if any(crypto in symbol for crypto in ['btc', 'eth', 'usd']) else 'X'
         sheet.update(f'{balance_col}{next_row + 1}', balance)
+        
+        # Cache invalidieren
+        sheet_cache["data"] = None
+        sheet_cache["timestamp"] = 0
         
         print(f"✅ Trade {ticket} hinzugefügt in Zeile {next_row}")
         return jsonify({"status": "ok", "row": next_row}), 200
@@ -268,6 +330,10 @@ def update_trade():
         symbol = (symbol_cell or '').lower()
         balance_col = 'W' if any(crypto in symbol for crypto in ['btc', 'eth', 'usd']) else 'X'
         sheet.update(f'{balance_col}{row_index + 1}', balance)
+        
+        # Cache invalidieren
+        sheet_cache["data"] = None
+        sheet_cache["timestamp"] = 0
         
         print(f"✅ Trade {ticket} aktualisiert in Zeile {row_index}")
         return jsonify({"status": "ok", "row": row_index}), 200
