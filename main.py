@@ -357,57 +357,78 @@ def post_dispatch():
         if not data:
             return jsonify({"error": "Keine JSON-Daten empfangen"}), 400
 
-        print(f"POST empfangen: {data}")
+        print(f"📥 POST Request empfangen: {data}")
 
         sheet = get_google_sheet()
         if not sheet:
             return jsonify({"error": "Sheet konnte nicht geöffnet werden"}), 500
 
         action = (data.get('action') or '').lower()
+        print(f"🔍 Action: '{action}'")
 
         if action == 'mark_executed':
             row = int(data.get('row', 0))
             ticket = str(data.get('ticket', ''))
+            print(f"📝 mark_executed: Zeile {row}, Ticket {ticket}")
             if row <= 0:
+                print(f"❌ Ungültige Zeile: {row}")
                 return jsonify({"error": "Ungültige Zeile"}), 400
-            sheet.update(f'Y{row}', [['EXECUTED']])
-            if ticket:
-                sheet.update(f'B{row}', [[ticket]])
-            # Cache wird automatisch nach 30 Sekunden erneuert
-            return jsonify({"ok": True}), 200
+            try:
+                sheet.update(f'Y{row}', [['EXECUTED']])
+                print(f"✅ Status auf EXECUTED gesetzt (Zeile {row})")
+                if ticket:
+                    sheet.update(f'B{row}', [[ticket]])
+                    print(f"✅ Ticket {ticket} in Zeile {row} geschrieben")
+                return jsonify({"ok": True}), 200
+            except Exception as e:
+                print(f"❌ Fehler beim Update: {e}")
+                return jsonify({"error": str(e)}), 500
 
         if action == 'add_manual_trade':
             ticket = str(data.get('ticket', ''))
+            print(f"📝 add_manual_trade: Ticket {ticket}")
             if not ticket:
+                print(f"❌ Kein Ticket angegeben")
                 return jsonify({"error": "Kein Ticket"}), 400
 
             existing = get_existing_tickets(sheet)
             if ticket in existing:
-                print(f"⚠️ Duplikat: {ticket}")
+                print(f"⚠️ Duplikat: Ticket {ticket} bereits vorhanden")
                 return jsonify({"ok": True, "message": "Trade bereits vorhanden"}), 200
 
             next_row = find_next_free_row(sheet)
+            print(f"📝 Schreibe manuellen Trade in Zeile {next_row}")
             timestamp = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
             symbol = str(data.get('symbol', '')).lower()
             side = str(data.get('side', '')).upper()
             price = format_decimal(data.get('price', ''))
             volume = format_decimal(data.get('volume', ''))
+            
+            print(f"  Symbol: {symbol}, Side: {side}, Price: {price}, Volume: {volume}")
 
-            sheet.update(f'A{next_row}:H{next_row}', [[
-                timestamp,
-                ticket,
-                '',
-                symbol,
-                side,
-                price,
-                '',
-                ''
-            ]])
-            sheet.update(f'V{next_row}', [[volume]])
-            sheet.update(f'Y{next_row}', [['EXECUTED']])
-
-            # Cache wird automatisch nach 30 Sekunden erneuert
-            return jsonify({"ok": True, "row": next_row}), 200
+            try:
+                sheet.update(f'A{next_row}:H{next_row}', [[
+                    timestamp,
+                    ticket,
+                    '',
+                    symbol,
+                    side,
+                    price,
+                    '',
+                    ''
+                ]])
+                sheet.update(f'V{next_row}', [[volume]])
+                sheet.update(f'Y{next_row}', [['EXECUTED']])
+                
+                # Balance wird später vom EA aktualisiert, wenn Trade geschlossen wird
+                
+                print(f"✅ Manueller Trade erfolgreich geschrieben (Zeile {next_row})")
+                return jsonify({"ok": True, "row": next_row}), 200
+            except Exception as e:
+                print(f"❌ Fehler beim Schreiben: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"error": str(e)}), 500
 
         if action == 'update_trade_result':
             row = int(data.get('row', 0))
