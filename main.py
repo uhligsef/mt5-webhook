@@ -205,9 +205,12 @@ def is_forex_symbol(symbol):
 def root():
     action = (request.args.get('action') or '').lower()
     broker = (request.args.get('broker') or '').lower()  # 'forex' oder 'crypto'
+    
+    print(f"📥 GET Request empfangen - action: '{action}', broker: '{broker}'")
 
     sheet = get_google_sheet()
     if not sheet:
+        print("❌ Sheet konnte nicht geöffnet werden")
         return jsonify({"error": "Sheet konnte nicht geöffnet werden"}), 500
 
     if action == 'check_ticket':
@@ -240,6 +243,8 @@ def root():
     # Standard: Suche nach nächstem "OK" Trade für den entsprechenden Broker
     refresh_sheet_cache(sheet)
     all_values = sheet_cache["data"]
+    
+    print(f"🔍 Suche nach 'OK' Trades für Broker '{broker}' - {len(all_values)} Zeilen im Cache")
 
     for idx in range(1, len(all_values)):
         row = all_values[idx]
@@ -247,14 +252,18 @@ def root():
         if status == 'OK':
             symbol = row[3].strip().lower() if len(row) > 3 else ''
             
+            print(f"  Zeile {idx + 1}: Status='{status}', Symbol='{symbol}'")
+            
             # Broker-Filter: Nur passende Trades zurückgeben
             if broker == 'forex':
                 # Roboforex: Nur Forex-Symbole
                 if not is_forex_symbol(symbol):
+                    print(f"    ⏭️ Übersprungen (Crypto-Symbol für Forex-Broker)")
                     continue
             elif broker == 'crypto':
                 # EasyMarkets: Nur Crypto-Symbole
                 if is_forex_symbol(symbol):
+                    print(f"    ⏭️ Übersprungen (Forex-Symbol für Crypto-Broker)")
                     continue
             
             side = row[4].strip().upper() if len(row) > 4 else ''
@@ -262,6 +271,7 @@ def root():
             sl = parse_decimal(row[7]) if len(row) > 7 else 0.0
             lots = parse_decimal(row[21]) if len(row) > 21 else 0.0
 
+            print(f"✅ Trade gefunden: {side} {symbol} (Zeile {idx + 1})")
             return jsonify({
                 "status": "OK",
                 "row": idx + 1,
@@ -272,6 +282,7 @@ def root():
                 "lots": lots
             }), 200
 
+    print(f"⏳ Kein 'OK' Trade gefunden für Broker '{broker}' - Status: WAIT")
     return jsonify({"status": "WAIT"}), 200
 
 
