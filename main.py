@@ -10,7 +10,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # Cache, um Google-Sheets-Reads zu reduzieren
-sheet_cache = {"data": None, "timestamp": 0}
+sheet_cache = {"data": None, "timestamp": 0, "lock": False}
+CACHE_DURATION = 30  # Cache für 30 Sekunden halten (statt 5)
 
 
 def format_decimal(value):
@@ -90,10 +91,34 @@ def get_json_from_request():
 
 
 def refresh_sheet_cache(sheet):
+    """Lädt den Cache nur, wenn er älter als CACHE_DURATION Sekunden ist."""
     current_time = time.time()
-    if current_time - sheet_cache["timestamp"] > 5 or sheet_cache["data"] is None:
+    
+    # Wenn Cache noch gültig ist, nichts tun
+    if (sheet_cache["data"] is not None and 
+        current_time - sheet_cache["timestamp"] < CACHE_DURATION):
+        return
+    
+    # Wenn bereits ein anderer Thread den Cache lädt, warten
+    if sheet_cache["lock"]:
+        # Warte maximal 2 Sekunden, dann verwende alten Cache
+        wait_time = 0
+        while sheet_cache["lock"] and wait_time < 2:
+            time.sleep(0.1)
+            wait_time += 0.1
+        if sheet_cache["data"] is not None:
+            return
+    
+    # Cache sperren und laden
+    try:
+        sheet_cache["lock"] = True
         sheet_cache["data"] = sheet.get_all_values()
         sheet_cache["timestamp"] = current_time
+    except Exception as e:
+        print(f"⚠️ Fehler beim Cache-Refresh: {e}")
+        # Bei Fehler: Cache nicht invalidieren, verwende alten Cache
+    finally:
+        sheet_cache["lock"] = False
 
 
 def find_next_free_row(sheet):
@@ -127,7 +152,9 @@ def get_last_balance_cached():
 
 
 def invalidate_cache():
-    sheet_cache["data"] = None
+    """Invalidiert den Cache - wird nur bei kritischen Updates aufgerufen."""
+    # Cache nicht komplett löschen, sondern nur Timestamp zurücksetzen
+    # So kann der alte Cache noch verwendet werden, bis er automatisch erneuert wird
     sheet_cache["timestamp"] = 0
 
 
@@ -276,8 +303,7 @@ def tradingview_webhook():
         balance_col = balance_column_for_symbol(symbol)
         sheet.update(f'{balance_col}{next_row + 1}', [[format_decimal(balance)]])
 
-        invalidate_cache()
-
+        # Cache wird automatisch nach 30 Sekunden erneuert - kein invalidate_cache() nötig
         print(f"✅ TradingView Signal {ticket} → Zeile {next_row}")
         return jsonify({"status": "OK", "row": next_row, "ticket": ticket}), 200
 
@@ -311,7 +337,7 @@ def post_dispatch():
             sheet.update(f'Y{row}', [['EXECUTED']])
             if ticket:
                 sheet.update(f'B{row}', [[ticket]])
-            invalidate_cache()
+            # Cache wird automatisch nach 30 Sekunden erneuert
             return jsonify({"ok": True}), 200
 
         if action == 'add_manual_trade':
@@ -344,7 +370,7 @@ def post_dispatch():
             sheet.update(f'V{next_row}', [[volume]])
             sheet.update(f'Y{next_row}', [['EXECUTED']])
 
-            invalidate_cache()
+            # Cache wird automatisch nach 30 Sekunden erneuert
             return jsonify({"ok": True, "row": next_row}), 200
 
         if action == 'update_trade_result':
@@ -360,11 +386,18 @@ def post_dispatch():
                 sheet.update(f'N{row}', [[exit_time]])
             sheet.update(f'Y{row}', [[exit_reason]])
 
-            symbol_cell = sheet.cell(row, 4).value
+            # Symbol aus Cache holen statt sheet.cell() - spart API-Call!
+            refresh_sheet_cache(sheet)
+            symbol_cell = ""
+            if row > 0 and row <= len(sheet_cache["data"]):
+                cache_row = sheet_cache["data"][row - 1]
+                if len(cache_row) > 3:
+                    symbol_cell = cache_row[3]
+            
             balance_col = balance_column_for_symbol(symbol_cell)
             sheet.update(f'{balance_col}{row + 1}', [[format_decimal(balance)]])
 
-            invalidate_cache()
+            # Cache wird automatisch nach 30 Sekunden erneuert
             return jsonify({"ok": True}), 200
 
         # Standard: MT5 sendet neuen Trade (Entry)
@@ -396,7 +429,7 @@ def post_dispatch():
         balance_col = balance_column_for_symbol(symbol)
         sheet.update(f'{balance_col}{next_row + 1}', [[format_decimal(data.get('balance', ''))]])
 
-        invalidate_cache()
+        # Cache wird automatisch nach 30 Sekunden erneuert
         return jsonify({"ok": True, "row": next_row}), 200
 
     except Exception as e:
@@ -423,10 +456,15 @@ def update_trade():
         if not ticket:
             return jsonify({"error": "Kein Ticket angegeben"}), 400
 
-        tickets = sheet.col_values(2)
-        try:
-            row_index = tickets.index(ticket) + 1
-        except ValueError:
+        # Verwende Cache statt sheet.col_values() - spart API-Call!
+        refresh_sheet_cache(sheet)
+        row_index = 0
+        for idx, row in enumerate(sheet_cache["data"]):
+            if len(row) > 1 and str(row[1]).strip() == ticket:
+                row_index = idx + 1
+                break
+        
+        if row_index == 0:
             return jsonify({"error": f"Ticket {ticket} nicht gefunden"}), 404
 
         sheet.update(f'N{row_index}', [[data.get('exit_time', '')]])
@@ -434,11 +472,17 @@ def update_trade():
         sheet.update(f'Y{row_index}', [['CLOSED']])
         sheet.update(f'Z{row_index}', [[format_decimal(data.get('profit', ''))]])
 
-        symbol_cell = sheet.cell(row_index, 4).value
+        # Symbol aus Cache holen statt sheet.cell() - spart API-Call!
+        symbol_cell = ""
+        if row_index > 0 and row_index <= len(sheet_cache["data"]):
+            row = sheet_cache["data"][row_index - 1]
+            if len(row) > 3:
+                symbol_cell = row[3]
+        
         balance_col = balance_column_for_symbol(symbol_cell)
         sheet.update(f'{balance_col}{row_index + 1}', [[format_decimal(data.get('balance', ''))]])
 
-        invalidate_cache()
+        # Cache wird automatisch nach 30 Sekunden erneuert
         return jsonify({"ok": True, "row": row_index}), 200
 
     except Exception as e:
