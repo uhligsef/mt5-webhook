@@ -142,9 +142,17 @@ def handle_method_override():
         request.environ['REQUEST_METHOD'] = 'PUT'
 
 
+def is_forex_symbol(symbol):
+    """Prüft ob ein Symbol ein Forex-Symbol ist (nicht Crypto)."""
+    symbol_lower = (symbol or '').lower()
+    crypto_keywords = ['btc', 'eth', 'ltc', 'xrp', 'ada', 'dot', 'link', 'xlm', 'bch', 'eos', 'trx', 'xmr', 'dash', 'etc', 'zec', 'neo', 'vet', 'matic', 'sol', 'avax', 'atom', 'algo', 'fil', 'aave', 'comp', 'mkr', 'sushi', 'uni', 'yfi']
+    return not any(keyword in symbol_lower for keyword in crypto_keywords)
+
+
 @app.route('/', methods=['GET'])
 def root():
     action = (request.args.get('action') or '').lower()
+    broker = (request.args.get('broker') or '').lower()  # 'forex' oder 'crypto'
 
     sheet = get_google_sheet()
     if not sheet:
@@ -161,6 +169,23 @@ def root():
                 return jsonify({"found": "true", "row": idx + 1})
         return jsonify({"found": "false"})
 
+    if action == 'get_last_executed':
+        symbol = (request.args.get('symbol') or '').strip().lower()
+        if not symbol:
+            return jsonify({"error": "Symbol fehlt"}), 400
+
+        refresh_sheet_cache(sheet)
+        # Suche rückwärts nach der letzten EXECUTED Zeile mit diesem Symbol
+        for idx in range(len(sheet_cache["data"]) - 1, 0, -1):
+            row = sheet_cache["data"][idx]
+            if len(row) > 3:
+                row_symbol = row[3].strip().lower()
+                row_status = row[24].strip().upper() if len(row) > 24 else ''
+                if row_symbol == symbol and row_status == 'EXECUTED':
+                    return jsonify({"row": idx + 1}), 200
+        return jsonify({"row": 0}), 200
+
+    # Standard: Suche nach nächstem "OK" Trade für den entsprechenden Broker
     refresh_sheet_cache(sheet)
     all_values = sheet_cache["data"]
 
@@ -169,6 +194,17 @@ def root():
         status = row[24].strip().upper() if len(row) > 24 else ''
         if status == 'OK':
             symbol = row[3].strip().lower() if len(row) > 3 else ''
+            
+            # Broker-Filter: Nur passende Trades zurückgeben
+            if broker == 'forex':
+                # Roboforex: Nur Forex-Symbole
+                if not is_forex_symbol(symbol):
+                    continue
+            elif broker == 'crypto':
+                # EasyMarkets: Nur Crypto-Symbole
+                if is_forex_symbol(symbol):
+                    continue
+            
             side = row[4].strip().upper() if len(row) > 4 else ''
             tp = parse_decimal(row[6]) if len(row) > 6 else 0.0
             sl = parse_decimal(row[7]) if len(row) > 7 else 0.0
