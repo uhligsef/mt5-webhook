@@ -10,8 +10,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # Cache, um Google-Sheets-Reads zu reduzieren
-sheet_cache = {"data": None, "timestamp": 0, "lock": False}
-CACHE_DURATION = 30  # Cache für 30 Sekunden halten (statt 5)
+sheet_cache = {"data": None, "timestamp": 0, "lock": False, "last_refresh_attempt": 0}
+CACHE_DURATION = 60  # Cache für 60 Sekunden halten
+MIN_REFRESH_INTERVAL = 10  # Mindestens 10 Sekunden zwischen Refresh-Versuchen
+sheet_client_cache = None  # Cache für Sheet-Client
+sheet_object_cache = None  # Cache für Sheet-Objekt selbst
 
 
 def format_decimal(value):
@@ -44,28 +47,42 @@ def parse_decimal(value):
 
 
 def get_google_sheet():
+    """Gibt das Sheet-Objekt zurück, mit gecachtem Client und Sheet."""
+    global sheet_client_cache, sheet_object_cache
+    
     try:
-        credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
-        if not credentials_json:
-            print("❌ GOOGLE_CREDENTIALS nicht gefunden!")
-            return None
+        # Sheet-Objekt cachen - open_by_url() könnte API-Calls machen
+        if sheet_object_cache is not None:
+            return sheet_object_cache
+        
+        # Client cachen - muss nicht bei jedem Request neu erstellt werden
+        if sheet_client_cache is None:
+            credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
+            if not credentials_json:
+                print("❌ GOOGLE_CREDENTIALS nicht gefunden!")
+                return None
 
-        credentials_dict = json.loads(credentials_json)
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
-        client = gspread.authorize(creds)
+            credentials_dict = json.loads(credentials_json)
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+            sheet_client_cache = gspread.authorize(creds)
 
         sheet_url = os.environ.get('SHEET_URL')
         if not sheet_url:
             print("❌ SHEET_URL nicht gefunden!")
             return None
 
-        return client.open_by_url(sheet_url).sheet1
+        # Sheet-Objekt cachen
+        sheet_object_cache = sheet_client_cache.open_by_url(sheet_url).sheet1
+        return sheet_object_cache
     except Exception as e:
         print(f"❌ Fehler beim Öffnen des Sheets: {e}")
+        # Bei Fehler: Caches zurücksetzen, damit beim nächsten Versuch neu erstellt wird
+        sheet_client_cache = None
+        sheet_object_cache = None
         return None
 
 
@@ -99,6 +116,12 @@ def refresh_sheet_cache(sheet):
         current_time - sheet_cache["timestamp"] < CACHE_DURATION):
         return
     
+    # Rate-Limiting: Verhindere zu häufige Refresh-Versuche
+    if (current_time - sheet_cache["last_refresh_attempt"] < MIN_REFRESH_INTERVAL):
+        # Zu früh für Refresh - verwende alten Cache
+        if sheet_cache["data"] is not None:
+            return
+    
     # Wenn bereits ein anderer Thread den Cache lädt, warten
     if sheet_cache["lock"]:
         # Warte maximal 2 Sekunden, dann verwende alten Cache
@@ -112,8 +135,10 @@ def refresh_sheet_cache(sheet):
     # Cache sperren und laden
     try:
         sheet_cache["lock"] = True
+        sheet_cache["last_refresh_attempt"] = current_time
         sheet_cache["data"] = sheet.get_all_values()
         sheet_cache["timestamp"] = current_time
+        print(f"✅ Cache aktualisiert (Zeit: {current_time})")
     except Exception as e:
         print(f"⚠️ Fehler beim Cache-Refresh: {e}")
         # Bei Fehler: Cache nicht invalidieren, verwende alten Cache
