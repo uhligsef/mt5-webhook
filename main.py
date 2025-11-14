@@ -368,20 +368,36 @@ def post_dispatch():
 
         if action == 'mark_executed':
             row = int(data.get('row', 0))
-            ticket = str(data.get('ticket', ''))
-            print(f"📝 mark_executed: Zeile {row}, Ticket {ticket}")
+            ticket = str(data.get('ticket', '')).strip()
+            print(f"📝 mark_executed: Zeile {row}, Ticket '{ticket}'")
             if row <= 0:
                 print(f"❌ Ungültige Zeile: {row}")
                 return jsonify({"error": "Ungültige Zeile"}), 400
+            if not ticket:
+                print(f"⚠️ WARNUNG: Kein Ticket angegeben für mark_executed (Zeile {row})")
+                # Status trotzdem auf EXECUTED setzen
+                try:
+                    sheet.update(f'Y{row}', [['EXECUTED']])
+                    print(f"✅ Status auf EXECUTED gesetzt (Zeile {row}) - aber kein Ticket")
+                    return jsonify({"ok": True, "warning": "Kein Ticket angegeben"}), 200
+                except Exception as e:
+                    print(f"❌ Fehler beim Update: {e}")
+                    return jsonify({"error": str(e)}), 500
+            
             try:
+                # Erst Status setzen
                 sheet.update(f'Y{row}', [['EXECUTED']])
                 print(f"✅ Status auf EXECUTED gesetzt (Zeile {row})")
-                if ticket:
-                    sheet.update(f'B{row}', [[ticket]])
-                    print(f"✅ Ticket {ticket} in Zeile {row} geschrieben")
+                
+                # Dann Ticket überschreiben (überschreibt auch TV_... Tickets)
+                sheet.update(f'B{row}', [[ticket]])
+                print(f"✅ Ticket '{ticket}' in Spalte B, Zeile {row} geschrieben (überschreibt altes Ticket)")
+                
                 return jsonify({"ok": True}), 200
             except Exception as e:
                 print(f"❌ Fehler beim Update: {e}")
+                import traceback
+                traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
 
         if action == 'add_manual_trade':
